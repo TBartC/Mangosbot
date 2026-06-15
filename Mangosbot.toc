@@ -1,0 +1,9 @@
+## Interface: 20400
+## Title: MangosBot
+## Author: Theo
+## Notes: MangosBot UI
+## DefaultState: Enabled
+## LoadOnDemand: 0
+##SavedVariables: frameopts
+Mangosbot.lua
+Mangosbot.xml
