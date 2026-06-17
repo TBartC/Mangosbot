@@ -79,6 +79,383 @@ function NormalizeBotCommand(text)
     return text
 end
 
+
+
+-- Bartcraft exact strategy helpers:
+-- Green buttons now mean the bot really has that exact co/nc flag.
+-- Clicking a green strategy button removes that same flag instead of adding/toggling it again.
+function BartcraftTrimFlag(text)
+    if (text == nil) then return "" end
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    return text
+end
+
+function BartcraftAddFlag(map, family, flag)
+    if (map == nil or family == nil or flag == nil or flag == "") then
+        return
+    end
+
+    if (map[family] == nil) then
+        map[family] = {}
+    end
+
+    for i = 1, table.getn(map[family]) do
+        if (map[family][i] == flag) then
+            return
+        end
+    end
+
+    table.insert(map[family], flag)
+end
+
+function BartcraftHasAnyFlags(map)
+    if (map == nil) then return false end
+    if (map["co"] ~= nil and table.getn(map["co"]) > 0) then return true end
+    if (map["nc"] ~= nil and table.getn(map["nc"]) > 0) then return true end
+    return false
+end
+
+function BartcraftParseFlagCommand(command)
+    local clean = NormalizeBotCommand(command)
+    if (clean == nil) then
+        return nil, nil, nil
+    end
+
+    local family, op, flag = string.match(clean, "^(co)%s*([%+%-%~])%s*(.+)$")
+    if (family == nil) then
+        family, op, flag = string.match(clean, "^(nc)%s*([%+%-%~])%s*(.+)$")
+    end
+
+    if (family == nil) then
+        return nil, nil, nil
+    end
+
+    flag = BartcraftTrimFlag(flag)
+    if (flag == "" or flag == "?") then
+        return nil, nil, nil
+    end
+
+    return family, op, flag
+end
+
+function BartcraftGetButtonFlagMap(button)
+    if (button == nil) then
+        return { co = {}, nc = {} }
+    end
+
+    if (button["flagMap"] ~= nil) then
+        return button["flagMap"]
+    end
+
+    local map = { co = {}, nc = {} }
+
+    if (button["command"] ~= nil) then
+        for key, command in pairs(button["command"]) do
+            local family, op, flag = BartcraftParseFlagCommand(command)
+
+            -- +flag and ~flag both mean this button represents that active strategy.
+            -- -flag commands are cleanup only and should not light the button green.
+            if (family ~= nil and (op == "+" or op == "~")) then
+                BartcraftAddFlag(map, family, flag)
+            end
+        end
+    end
+
+    -- Fallback for older buttons that only define button.strategy.
+    if (not BartcraftHasAnyFlags(map) and button["strategy"] ~= nil and button["strategy"] ~= "") then
+        BartcraftAddFlag(map, "co", button["strategy"])
+        BartcraftAddFlag(map, "nc", button["strategy"])
+    end
+
+    button["flagMap"] = map
+    return map
+end
+
+function BartcraftBotHasFlag(bot, family, flag)
+    if (bot == nil or bot["strategy"] == nil or bot["strategy"][family] == nil) then
+        return false
+    end
+
+    for i = 1, table.getn(bot["strategy"][family]) do
+        if (bot["strategy"][family][i] == flag) then
+            return true
+        end
+    end
+
+    return false
+end
+
+function BartcraftBotHasAllFlags(bot, family, flags)
+    if (flags == nil or table.getn(flags) == 0) then
+        return false
+    end
+
+    for i = 1, table.getn(flags) do
+        if (not BartcraftBotHasFlag(bot, family, flags[i])) then
+            return false
+        end
+    end
+
+    return true
+end
+
+function BartcraftBotHasFlagAnyFamily(bot, flag)
+    if (BartcraftBotHasFlag(bot, "co", flag)) then
+        return true
+    end
+
+    if (BartcraftBotHasFlag(bot, "nc", flag)) then
+        return true
+    end
+
+    return false
+end
+
+function BartcraftBotHasAllFlagsAnyFamily(bot, flags)
+    if (flags == nil or table.getn(flags) == 0) then
+        return false
+    end
+
+    for i = 1, table.getn(flags) do
+        if (not BartcraftBotHasFlagAnyFamily(bot, flags[i])) then
+            return false
+        end
+    end
+
+    return true
+end
+
+
+
+-- Bartcraft role/spec alias helpers:
+-- Playerbot can report real spec package strategies such as "protection pve"
+-- or "restoration pve" instead of plain "tank"/"heal"/"dps".
+-- These helpers let the panel light the pet-style role buttons from what the bot
+-- actually reports.
+BartcraftRoleAliases = {
+    ["tank"] = {
+        "tank", "tank assist", "tank aoe",
+        "protection", "protection pve",
+        "tank feral", "tank feral pve"
+    },
+    ["heal"] = {
+        "heal", "healer",
+        "holy", "holy pve",
+        "restoration", "restoration pve",
+        "discipline", "discipline pve"
+    },
+    ["dps"] = {
+        -- Do NOT include plain "dps assist" here. Healers/tanks often keep
+        -- dps assist as a support/default flag, so it would light DPS incorrectly.
+        "dps",
+        "shadow", "shadow pve",
+        "fire", "fire pve", "frost", "frost pve", "arcane", "arcane pve",
+        "elemental", "elemental pve", "enhancement", "enhancement pve",
+        "retribution", "retribution pve",
+        "arms", "arms pve", "fury", "fury pve",
+        "combat", "combat pve", "assassination", "assassination pve", "subtlety", "subtlety pve",
+        "beast mastery", "beast mastery pve", "marksmanship", "marksmanship pve", "survival", "survival pve",
+        "affliction", "affliction pve", "demonology", "demonology pve", "destruction", "destruction pve",
+        "balance", "balance pve", "dps feral", "dps feral pve"
+    }
+}
+
+function BartcraftBotHasAnyAlias(bot, role)
+    local aliases = BartcraftRoleAliases[role]
+    if (aliases == nil) then
+        return false
+    end
+
+    for i = 1, table.getn(aliases) do
+        if (BartcraftBotHasFlagAnyFamily(bot, aliases[i])) then
+            return true
+        end
+    end
+
+    return false
+end
+
+function BartcraftBotMatchesRole(bot, role)
+    if (bot == nil or role == nil or role == "") then
+        return false
+    end
+
+    -- Do not let offheal/offdps alone define the main role.
+    -- Main role comes from actual spec/package strategies or plain tank/heal/dps.
+    if (role == "tank") then
+        return BartcraftBotHasAnyAlias(bot, "tank")
+    end
+
+    if (role == "heal") then
+        return BartcraftBotHasAnyAlias(bot, "heal")
+    end
+
+    if (role == "dps") then
+        return BartcraftBotHasAnyAlias(bot, "dps")
+    end
+
+    return false
+end
+
+
+function ButtonIsActiveForBot(button, bot)
+    if (button ~= nil and button["roleButton"] ~= nil and button["roleButton"] ~= "") then
+        return BartcraftBotMatchesRole(bot, button["roleButton"])
+    end
+
+    local map = BartcraftGetButtonFlagMap(button)
+
+    -- Buttons should reflect the exact flags the bot reported, even if this
+    -- playerbot build placed a combat-looking flag in the nc list or an nc flag in co.
+    -- Example: a DPS button that represents "dps" + "dps assist" lights up if those
+    -- exact flags are present in either co or nc.
+    if (BartcraftBotHasAllFlags(bot, "co", map["co"])) then
+        return true
+    end
+
+    if (BartcraftBotHasAllFlags(bot, "nc", map["co"])) then
+        return true
+    end
+
+    if (BartcraftBotHasAllFlags(bot, "nc", map["nc"])) then
+        return true
+    end
+
+    if (BartcraftBotHasAllFlags(bot, "co", map["nc"])) then
+        return true
+    end
+
+    if (BartcraftBotHasAllFlagsAnyFamily(bot, map["co"])) then
+        return true
+    end
+
+    if (BartcraftBotHasAllFlagsAnyFamily(bot, map["nc"])) then
+        return true
+    end
+
+    return false
+end
+
+function ButtonHasStrategyFlags(button)
+    return BartcraftHasAnyFlags(BartcraftGetButtonFlagMap(button))
+end
+
+function ButtonHasExplicitStrategyCommands(button)
+    if (button == nil or button["command"] == nil) then
+        return false
+    end
+
+    for key, command in pairs(button["command"]) do
+        local family, op, flag = BartcraftParseFlagCommand(command)
+        if (family ~= nil and (op == "+" or op == "~")) then
+            return true
+        end
+    end
+
+    return false
+end
+
+function BuildButtonOnCommands(button)
+    local map = BartcraftGetButtonFlagMap(button)
+    local commands = {}
+    local seen = {}
+    local delay = 0
+    local step = 0.15
+
+    local function add(family, flag)
+        flag = BartcraftTrimFlag(flag)
+        if (family == nil or flag == nil or flag == "" or flag == "?" or seen[family .. ":" .. flag]) then
+            return
+        end
+
+        seen[family .. ":" .. flag] = true
+        commands[delay] = family .. " +" .. flag
+        delay = delay + step
+    end
+
+    if (map["co"] ~= nil) then
+        for i = 1, table.getn(map["co"]) do
+            add("co", map["co"][i])
+        end
+    end
+
+    if (map["nc"] ~= nil) then
+        for i = 1, table.getn(map["nc"]) do
+            add("nc", map["nc"][i])
+        end
+    end
+
+    if (delay == 0) then
+        return button["command"]
+    end
+
+    return commands
+end
+
+function ButtonHasIntendedFlags(button, bot)
+    local map = BartcraftGetButtonFlagMap(button)
+    local hasAny = false
+
+    if (map["co"] ~= nil and table.getn(map["co"]) > 0) then
+        hasAny = true
+        if (not BartcraftBotHasAllFlags(bot, "co", map["co"])) then
+            return false
+        end
+    end
+
+    if (map["nc"] ~= nil and table.getn(map["nc"]) > 0) then
+        hasAny = true
+        if (not BartcraftBotHasAllFlags(bot, "nc", map["nc"])) then
+            return false
+        end
+    end
+
+    return hasAny
+end
+
+function BuildButtonOffCommands(button)
+    local map = BartcraftGetButtonFlagMap(button)
+    local commands = {}
+    local seen = {}
+    local delay = 0
+    local step = 0.15
+
+    local function add(family, flag)
+        flag = BartcraftTrimFlag(flag)
+        if (family == nil or flag == nil or flag == "" or flag == "?" or seen[family .. ":" .. flag]) then
+            return
+        end
+
+        seen[family .. ":" .. flag] = true
+        commands[delay] = family .. " -" .. flag
+        delay = delay + step
+    end
+
+    local function addBoth(flag)
+        add("co", flag)
+        add("nc", flag)
+    end
+
+    -- Remove this button's own flags from BOTH co and nc. This handles this
+    -- playerbot build reporting combat-looking strategies under Non Combat
+    -- Strategies without making every normal button become a full wipe.
+    if (map["co"] ~= nil) then
+        for i = 1, table.getn(map["co"]) do
+            addBoth(map["co"][i])
+        end
+    end
+
+    if (map["nc"] ~= nil) then
+        for i = 1, table.getn(map["nc"]) do
+            addBoth(map["nc"][i])
+        end
+    end
+
+    return commands
+end
+
+
 function CreateToolBar(frame, y, name, buttons, x, spacing, register)
     if (x == nil) then x = 5 end
     if (spacing == nil) then spacing = 5 end
@@ -127,6 +504,12 @@ function CreateToolBar(frame, y, name, buttons, x, spacing, register)
         btn["emote"] = button["emote"]
         btn["group"] = button["group"]
         btn["handler"] = button["handler"]
+        btn["roleButton"] = button["roleButton"]
+        btn["strategy"] = button["strategy"]
+        btn["formation"] = button["formation"]
+        btn["rti"] = button["rti"]
+        btn["loot"] = button["loot"]
+        btn["savemana"] = button["savemana"]
         btn["ToolBarButtonOnClick"] = ToolBarButtonOnClick;
         btn:SetScript("OnClick", function()
             btn["ToolBarButtonOnClick"](btn, true)
@@ -206,9 +589,13 @@ function ToolBarButtonOnClick(btn, visual)
         DoEmote(btn["emote"])
     end
 
+    local commands = btn["command"]
+
     if (btn["group"]) then
+        -- Group buttons are always action buttons. Do not auto-wipe or toggle off
+        -- based on one bot being green; that was making normal buttons feel destructive.
         local delay = 0
-        for key, command in pairs(btn["command"]) do
+        for key, command in pairs(commands) do
             local cleanCommand = NormalizeBotCommand(command)
             if (cleanCommand ~= nil and cleanCommand ~= "") then
                 wait(key, function(command) SendBotGroupCommand(command) end, cleanCommand)
@@ -226,8 +613,21 @@ function ToolBarButtonOnClick(btn, visual)
             return
         end
 
+        -- Normal strategy buttons are now true on/off toggles only for their own flags.
+        -- They do NOT wipe old strategies. Full wiping only happens from the wipe button.
+        -- If a button is green only because the flag is showing in the wrong family
+        -- (example: dps assist listed under nc), clicking it will still send the intended
+        -- add command instead of removing everything.
+        if (visual and ButtonHasStrategyFlags(btn)) then
+            if (btn["isActive"]) then
+                commands = BuildButtonOffCommands(btn)
+            elseif (ButtonHasExplicitStrategyCommands(btn)) then
+                commands = BuildButtonOnCommands(btn)
+            end
+        end
+
         local delay = 0
-        for key, command in pairs(btn["command"]) do
+        for key, command in pairs(commands) do
             local cleanCommand = NormalizeBotCommand(command)
             if (cleanCommand ~= nil and cleanCommand ~= "") then
                 wait(key, function(command, bot) SendBotCommand(command, "WHISPER", nil, bot) end, cleanCommand, bot)
@@ -235,7 +635,7 @@ function ToolBarButtonOnClick(btn, visual)
             if (delay < key) then delay = key end
         end
 
-        -- Since we stripped ,? from the action command, refresh the panel once afterward.
+        -- Refresh after add/remove so the green buttons always mirror the real bot flags.
         if (bot ~= nil and bot ~= "") then
             wait(delay + 0.35, function(bot)
                 LastBotQueryTime[bot] = nil
@@ -247,6 +647,8 @@ end
 
 function ToggleButton(frame, toolbar, button, toggle)
     local btn = frame.toolbar[toolbar].buttons[button]
+    btn["isActive"] = toggle
+
     if (toggle) then
         btn:SetBackdropBorderColor(0.2, 1.0, 0.2, 1.0)
     else
@@ -347,6 +749,50 @@ function ResizeBotPanel(frame, width, height)
     end
 end
 
+
+function AddBartcraftCloseButton(parent, ownerFrame, name)
+    local btn = CreateFrame("Button", name, parent)
+    btn:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -3, -3)
+    btn:SetWidth(16)
+    btn:SetHeight(16)
+    btn:EnableMouse(true)
+    btn:RegisterForClicks("LeftButtonDown")
+    btn:SetBackdrop({
+        edgeFile = "Interface/ChatFrame/ChatFrameBackground",
+        tile = false, tileSize = 16, edgeSize = 2,
+        insets = { left = 0, right = 0, top = 0, bottom = 0 }
+    })
+    btn:SetBackdropBorderColor(1.0, 0.2, 0.2, 1.0)
+
+    btn.text = btn:CreateFontString(name .. "Text")
+    btn.text:SetPoint("CENTER", btn, "CENTER", 0, 0)
+    btn.text:SetWidth(16)
+    btn.text:SetHeight(16)
+    btn.text:SetFont("Fonts/FRIZQT__.TTF", 11, "OUTLINE")
+    btn.text:SetText("X")
+
+    btn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(btn, "ANCHOR_TOPLEFT", 0, -25)
+        GameTooltip:SetText("Close")
+        GameTooltip:Show()
+    end)
+
+    btn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    btn:SetScript("OnClick", function()
+        if (ownerFrame == SelectedBotPanel) then
+            CurrentBot = nil
+            ownerFrame.botName = nil
+        end
+
+        ownerFrame:Hide()
+    end)
+
+    return btn
+end
+
 function CreateBotRoster()
     local frame = CreateFrame("Frame", "BotRoster", UIParent)
     frame:Hide()
@@ -366,6 +812,7 @@ function CreateBotRoster()
     frame:RegisterForDrag("LeftButton")
 
     EnablePositionSaving(frame, "BotRoster")
+    frame.close = AddBartcraftCloseButton(frame, frame, "BotRosterClose")
 
     frame.items = {}
     for i = 1,10 do
@@ -796,22 +1243,29 @@ BartcraftCombatRoleClearList = {
     "shadow",
     "holy",
     "aoe",
-    "threat"
+    "aoe restoration pve",
+    "threat",
+    "ranged",
+    "offheal",
+    "offheal pve",
+    "restoration",
+    "restoration pve"
 }
 
 function BuildCombatRoleCommands(a, b, c, d, e, f)
     local commands = {}
     local delay = 0
     local step = 0.15
+    local seen = {}
 
-    for i = 1, table.getn(BartcraftCombatRoleClearList) do
-        commands[delay] = "co -" .. BartcraftCombatRoleClearList[i]
-        delay = delay + step
-    end
-
+    -- Role/strategy buttons are no longer destructive.
+    -- They add their own combat strategies only. If the button is already active
+    -- in the intended family, ToolBarButtonOnClick turns only those exact flags off.
+    -- The big wipe button is the only thing that removes every current strategy.
     local adds = {a, b, c, d, e, f}
     for i = 1, table.getn(adds) do
-        if (adds[i] ~= nil and adds[i] ~= "") then
+        if (adds[i] ~= nil and adds[i] ~= "" and not seen[adds[i]]) then
+            seen[adds[i]] = true
             commands[delay] = "co +" .. adds[i]
             delay = delay + step
         end
@@ -819,6 +1273,384 @@ function BuildCombatRoleCommands(a, b, c, d, e, f)
 
     return commands
 end
+
+function BuildStrategyCommands(coFlags, ncFlags)
+    local commands = {}
+    local delay = 0
+    local step = 0.15
+    local seen = {}
+
+    local function add(family, flag)
+        flag = BartcraftTrimFlag(flag)
+        if (family == nil or flag == nil or flag == "" or flag == "?" or seen[family .. ":" .. flag]) then
+            return
+        end
+
+        seen[family .. ":" .. flag] = true
+        commands[delay] = family .. " +" .. flag
+        delay = delay + step
+    end
+
+    if (coFlags ~= nil) then
+        for i = 1, table.getn(coFlags) do
+            add("co", coFlags[i])
+        end
+    end
+
+    if (ncFlags ~= nil) then
+        for i = 1, table.getn(ncFlags) do
+            add("nc", ncFlags[i])
+        end
+    end
+
+    return commands
+end
+
+
+-- Strategies that commonly appear as default/playerbot package behavior.
+-- The wipe button also removes every exact strategy currently reported by co ? / nc ?,
+-- so this list is only a safety net for stale panels or server-side oddities.
+BartcraftKnownStrategyClearList = {
+    "default",
+    "passive",
+    "avoid mobs",
+    "flee",
+    "flee combat",
+    "follow",
+    "stay",
+    "guard",
+    "grind",
+    "loot",
+    "food",
+    "chat",
+    "custom::say",
+    "ai chat",
+    "boost",
+    "buff",
+    "buff elemental pve",
+    "buff restoration pve",
+    "bhealth",
+    "bmana",
+    "barmor",
+    "bdps",
+    "bspeed",
+    "bthreat",
+    "cure",
+    "cure elemental pve",
+    "cure restoration pve",
+    "cc",
+    "cc restoration pve",
+    "chase jump",
+    "duel",
+    "elemental",
+    "elemental pve",
+    "mount",
+    "potions",
+    "pvp",
+    "racials",
+    "roll",
+    "totems",
+    "quest",
+    "rpg",
+    "rpg bank",
+    "rpg bg",
+    "rpg explore",
+    "rpg guild",
+    "rpg maintenance",
+    "rpg quest",
+    "rpg vendor",
+    "fish",
+    "group",
+    "guild"
+}
+
+function BartcraftAddUniqueStrategyFlag(list, seen, flag)
+    flag = BartcraftTrimFlag(flag)
+    if (flag == nil or flag == "" or flag == "?" or flag == "co" or flag == "nc") then
+        return
+    end
+
+    if (seen[flag]) then
+        return
+    end
+
+    seen[flag] = true
+    table.insert(list, flag)
+end
+
+function BartcraftBuildCurrentStrategyWipeCommands(bot)
+    local flags = {}
+    local seen = {}
+
+    if (bot ~= nil and bot["strategy"] ~= nil) then
+        if (bot["strategy"]["co"] ~= nil) then
+            for i = 1, table.getn(bot["strategy"]["co"]) do
+                BartcraftAddUniqueStrategyFlag(flags, seen, bot["strategy"]["co"][i])
+            end
+        end
+
+        if (bot["strategy"]["nc"] ~= nil) then
+            for i = 1, table.getn(bot["strategy"]["nc"]) do
+                BartcraftAddUniqueStrategyFlag(flags, seen, bot["strategy"]["nc"][i])
+            end
+        end
+    end
+
+    for i = 1, table.getn(BartcraftCombatRoleClearList) do
+        BartcraftAddUniqueStrategyFlag(flags, seen, BartcraftCombatRoleClearList[i])
+    end
+
+    for i = 1, table.getn(BartcraftKnownStrategyClearList) do
+        BartcraftAddUniqueStrategyFlag(flags, seen, BartcraftKnownStrategyClearList[i])
+    end
+
+    local commands = {}
+    local delay = 0
+    local step = 0.10
+
+    for i = 1, table.getn(flags) do
+        commands[delay] = "co -" .. flags[i]
+        delay = delay + step
+        commands[delay] = "nc -" .. flags[i]
+        delay = delay + step
+    end
+
+    return commands, delay
+end
+
+function BartcraftRunFullStrategyWipe(botName)
+    if (botName == nil or botName == "") then
+        return
+    end
+
+    local bot = botTable[botName]
+    local commands, finalDelay = BartcraftBuildCurrentStrategyWipeCommands(bot)
+    local count = 0
+
+    for delay, command in pairs(commands) do
+        count = count + 1
+        wait(delay, function(command, botName)
+            SendBotCommand(command, "WHISPER", nil, botName)
+        end, command, botName)
+    end
+
+    if (count == 0) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Mangosbot had no current strategies cached. Press refresh, then wipe again.|r")
+        return
+    end
+
+    if (botTable[botName] ~= nil) then
+        botTable[botName]["strategy"] = {co = {}, nc = {}}
+        botTable[botName]["role"] = "dps"
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage("|cff55ff55Mangosbot wiping " .. count .. " strategy removals from " .. botName .. ".|r")
+
+    wait(finalDelay + 0.75, function(botName)
+        LastBotQueryTime[botName] = nil
+        QuerySelectedBot(botName, true)
+    end, botName)
+end
+
+function WipeSelectedBotStrategies()
+    local botName = GetPinnedBotName()
+
+    if (botName == nil or botName == "") then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Mangosbot cannot wipe strategies: no bot menu is selected.|r")
+        return
+    end
+
+    -- Pull the latest exact strategy list first, then wipe what the bot really reports.
+    LastBotQueryTime[botName] = nil
+    SendBotAddonCommand("co ?", "WHISPER", nil, botName)
+    wait(0.20, function(botName) SendBotAddonCommand("nc ?", "WHISPER", nil, botName) end, botName)
+    wait(0.90, function(botName) BartcraftRunFullStrategyWipe(botName) end, botName)
+end
+
+function BartcraftGuessRoleFromStrategies(bot)
+    if (bot == nil or bot["strategy"] == nil) then
+        return "dps"
+    end
+
+    -- Protection/feral tank packages should win over generic dps/aoe flags.
+    if (BartcraftBotMatchesRole(bot, "tank")) then
+        return "tank"
+    end
+
+    if (BartcraftBotMatchesRole(bot, "heal")) then
+        return "heal"
+    end
+
+    return "dps"
+end
+
+
+
+-- Class/spec role requests.
+-- This CMaNGOS/playerbot build changes real role from TALENTS first, then
+-- rebuilds the default strategies from that spec with reset strats.
+-- Correct command is: talents <premade spec name>
+BartcraftSpecCommandTemplate = "talents %s"
+
+BartcraftRoleProfiles = {
+    ["WARRIOR"] = {
+        dps = { spec = "pve fury", co = {"fury", "dps assist", "behind", "close", "aoe", "buff", "boost"}, nc = {"fury", "dps assist", "buff", "boost"} },
+        tank = { spec = "pve prot", co = {"protection", "tank assist", "pull", "pull back", "close", "aoe", "buff", "boost"}, nc = {"protection", "tank assist", "buff", "boost"} }
+    },
+    ["PALADIN"] = {
+        dps = { spec = "pve dps ret", co = {"retribution", "dps assist", "close", "cure", "aoe", "cc", "buff", "boost", "aura", "blessing"}, nc = {"retribution", "dps assist", "cure", "buff", "boost", "aura", "blessing"} },
+        tank = { spec = "pve prot", co = {"protection", "tank assist", "pull", "pull back", "close", "cure", "aoe", "cc", "buff", "boost", "aura", "blessing"}, nc = {"protection", "tank assist", "cure", "buff", "boost", "aura", "blessing"} },
+        heal = { spec = "pve holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "buff", "boost", "aura", "blessing"}, nc = {"holy", "dps assist", "cure", "buff", "boost", "aura", "blessing"} }
+    },
+    ["HUNTER"] = {
+        dps = { spec = "pve dps bm", co = {"beast mastery", "dps assist", "ranged", "pet", "aspect", "sting", "cc", "aoe", "buff", "boost"}, nc = {"beast mastery", "dps assist", "pet", "aspect", "buff", "boost"} }
+    },
+    ["ROGUE"] = {
+        dps = { spec = "pve dps combat", co = {"combat", "dps assist", "close", "behind", "stealth", "poisons", "aoe", "cc", "buff", "boost"}, nc = {"combat", "dps assist", "stealth", "poisons", "buff", "boost"} }
+    },
+    ["PRIEST"] = {
+        dps = { spec = "pve dps shadow", co = {"shadow", "dps assist", "flee", "ranged", "cure", "cc", "buff", "aoe", "boost"}, nc = {"shadow", "dps assist", "cure", "buff", "boost"} },
+        heal = { spec = "pve heal holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "cc", "buff", "aoe", "boost"}, nc = {"holy", "dps assist", "cure", "buff", "boost"} }
+    },
+    ["SHAMAN"] = {
+        dps = { spec = "pve dps elem", co = {"elemental", "dps assist", "ranged", "aoe", "cc", "cure", "totems", "buff", "boost"}, nc = {"elemental", "dps assist", "aoe", "cc", "cure", "totems", "buff", "boost"} },
+        melee = { spec = "pve dps enh", co = {"enhancement", "dps assist", "close", "aoe", "cc", "cure", "totems", "buff", "boost"}, nc = {"enhancement", "dps assist", "aoe", "cc", "cure", "totems", "buff", "boost"} },
+        heal = { spec = "pve resto", co = {"restoration", "flee", "ranged", "dps assist", "cure", "totems", "buff", "boost"}, nc = {"restoration", "dps assist", "cure", "totems", "buff", "boost"} }
+    },
+    ["MAGE"] = {
+        dps = { spec = "pve dps fire", co = {"fire", "dps assist", "flee", "ranged", "cc", "cure", "buff", "aoe", "boost"}, nc = {"fire", "dps assist", "cure", "buff", "boost"} }
+    },
+    ["WARLOCK"] = {
+        dps = { spec = "pve dps destro", co = {"destruction", "dps assist", "flee", "ranged", "cc", "pet", "aoe", "buff", "boost", "curse"}, nc = {"destruction", "dps assist", "pet", "buff", "boost"} }
+    },
+    ["DRUID"] = {
+        dps = { spec = "pve dps feral cat", co = {"dps feral", "dps assist", "close", "behind", "cure", "aoe", "cc", "buff", "boost"}, nc = {"dps feral", "dps assist", "cure", "buff", "boost"} },
+        caster = { spec = "pve dps balance", co = {"balance", "dps assist", "flee", "ranged", "cure", "aoe", "cc", "buff", "boost"}, nc = {"balance", "dps assist", "cure", "buff", "boost"} },
+        tank = { spec = "pve dps feral tank", co = {"tank feral", "tank assist", "pull", "pull back", "close", "cure", "aoe", "cc", "buff", "boost"}, nc = {"tank feral", "tank assist", "cure", "buff", "boost"} },
+        heal = { spec = "pve resto", co = {"restoration", "dps assist", "flee", "ranged", "cure", "aoe", "cc", "buff", "boost"}, nc = {"restoration", "dps assist", "cure", "buff", "boost"} }
+    }
+}
+
+function BartcraftGetRoleProfile(class, role)
+    if (class == nil or role == nil) then
+        return nil
+    end
+
+    local classProfiles = BartcraftRoleProfiles[class]
+    if (classProfiles == nil) then
+        return nil
+    end
+
+    return classProfiles[role]
+end
+
+function BartcraftGetSelectedBotClass(botName)
+    if (botName ~= nil and botTable[botName] ~= nil and botTable[botName]["class"] ~= nil) then
+        return string.upper(botTable[botName]["class"])
+    end
+
+    local unitClass = nil
+    if (GetUnitName("target") == botName) then
+        local tmp
+        tmp, unitClass = UnitClass("target")
+    end
+
+    if (unitClass ~= nil) then
+        return string.upper(unitClass)
+    end
+
+    return "UNKNOWN"
+end
+
+function BartcraftGetPreferredSpecForRole(class, role)
+    local profile = BartcraftGetRoleProfile(class, role)
+    if (profile == nil) then
+        return nil
+    end
+
+    return profile["spec"]
+end
+
+function BartcraftAddRoleCommand(commands, delay, command)
+    if (command == nil or command == "") then
+        return delay
+    end
+
+    commands[delay] = command
+    return delay + 0.18
+end
+
+function BartcraftBuildRoleModeCommands(role, class)
+    local profile = BartcraftGetRoleProfile(class, role)
+    if (profile == nil) then
+        return nil, 0
+    end
+
+    local commands = {}
+    local delay = 0
+
+    if (profile["spec"] ~= nil and profile["spec"] ~= "") then
+        delay = BartcraftAddRoleCommand(commands, delay, string.format(BartcraftSpecCommandTemplate, profile["spec"]))
+        -- Rebuild the core's default strategies from the new talent tree.
+        delay = BartcraftAddRoleCommand(commands, delay + 0.35, "reset strats")
+    end
+
+    if (profile["co"] ~= nil) then
+        for i = 1, table.getn(profile["co"]) do
+            delay = BartcraftAddRoleCommand(commands, delay, "co +" .. profile["co"][i])
+        end
+    end
+
+    if (profile["nc"] ~= nil) then
+        for i = 1, table.getn(profile["nc"]) do
+            delay = BartcraftAddRoleCommand(commands, delay, "nc +" .. profile["nc"][i])
+        end
+    end
+
+    delay = BartcraftAddRoleCommand(commands, delay + 0.25, "co ?")
+    delay = BartcraftAddRoleCommand(commands, delay, "nc ?")
+
+    return commands, delay
+end
+
+function BartcraftSetRoleMode(role)
+    local botName = GetPinnedBotName()
+    if (botName == nil or botName == "") then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Mangosbot cannot set role: no bot menu is selected.|r")
+        return
+    end
+
+    local class = BartcraftGetSelectedBotClass(botName)
+    local commands, finalDelay = BartcraftBuildRoleModeCommands(role, class)
+    if (commands == nil) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Mangosbot has no " .. role .. " role profile for " .. class .. ".|r")
+        return
+    end
+
+    for key, command in pairs(commands) do
+        wait(key, function(command, botName) SendBotCommand(command, "WHISPER", nil, botName) end, command, botName)
+    end
+
+    wait(finalDelay + 0.35, function(botName)
+        LastBotQueryTime[botName] = nil
+        QuerySelectedBot(botName, false)
+    end, botName)
+
+    DEFAULT_CHAT_FRAME:AddMessage("|cff55ff55Mangosbot requested " .. role .. " mode for " .. botName .. " (" .. class .. ").|r")
+end
+
+function BartcraftSetDpsMode()
+    BartcraftSetRoleMode("dps")
+end
+
+function BartcraftSetTankMode()
+    BartcraftSetRoleMode("tank")
+end
+
+function BartcraftSetHealMode()
+    BartcraftSetRoleMode("heal")
+end
+
 
 function CreateSelectedBotPanel()
     local frame = CreateFrame("Frame", "SelectedBotPanel", UIParent)
@@ -868,6 +1700,7 @@ function CreateSelectedBotPanel()
     frame.header.role.texture = frame.header.role:CreateTexture(nil, "BACKGROUND")
     frame.header.role.texture:SetTexture("Interface/Addons/Mangosbot/Images/role_dps.tga")
     frame.header.role.texture:SetAllPoints()
+    frame.close = AddBartcraftCloseButton(frame.header, frame, "SelectedBotPanelClose")
 
     EnablePositionSaving(frame, "SelectedBotPanel")
 
@@ -1002,37 +1835,44 @@ function CreateSelectedBotPanel()
     CreateToolBar(frame, -y, "role_set", {
         ["wipe_roles"] = {
             icon = "passive",
-            command = BuildCombatRoleCommands(),
+            command = {[0] = ""},
             strategy = "",
-            tooltip = "Wipe combat role strategies",
+            tooltip = "Wipe ALL current co/nc strategies",
+            handler = WipeSelectedBotStrategies,
             index = 0
         },
         ["set_heal"] = {
             icon = "heal",
-            command = BuildCombatRoleCommands("heal"),
+            command = {[0] = ""},
             strategy = "heal",
-            tooltip = "Set healer only",
+            roleButton = "heal",
+            tooltip = "Request healer mode / healer premade spec",
+            handler = BartcraftSetHealMode,
             index = 1
         },
         ["set_dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
+            command = {[0] = ""},
             strategy = "dps",
-            tooltip = "Set DPS only",
+            roleButton = "dps",
+            tooltip = "Request DPS mode / DPS premade spec",
+            handler = BartcraftSetDpsMode,
             index = 2
         },
         ["set_tank"] = {
             icon = "tank",
-            command = BuildCombatRoleCommands("tank"),
+            command = {[0] = ""},
             strategy = "tank",
-            tooltip = "Set tank only",
+            roleButton = "tank",
+            tooltip = "Request tank mode / tank premade spec",
+            handler = BartcraftSetTankMode,
             index = 3
         },
         ["set_tank_aoe"] = {
             icon = "tank_assist",
-            command = BuildCombatRoleCommands("tank", "tank aoe"),
-            strategy = "tank aoe",
-            tooltip = "Set AOE tank only",
+            command = BuildStrategyCommands({"tank assist", "aoe"}, {"tank assist"}),
+            strategy = "tank assist",
+            tooltip = "Toggle tank assist / AOE tank strategy",
             index = 4
         }
     })
@@ -1041,16 +1881,16 @@ function CreateSelectedBotPanel()
     CreateToolBar(frame, -y, "attack_type", {
         ["tank_aoe"] = {
             icon = "tank_assist",
-            command = BuildCombatRoleCommands("tank", "tank aoe"),
-            strategy = "tank aoe",
-            tooltip = "Grab all aggro",
+            command = BuildStrategyCommands({"tank assist", "aoe"}, {"tank assist"}),
+            strategy = "tank assist",
+            tooltip = "Grab aggro / tank assist",
             index = 0
         },
         ["dps_assist"] = {
             icon = "dps_assist",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
+            command = BuildStrategyCommands({"dps assist"}, {"dps assist"}),
             strategy = "dps assist",
-            tooltip = "Assist others",
+            tooltip = "Assist the group target",
             index = 1
         },
         ["threat"] = {
@@ -1094,368 +1934,382 @@ function CreateSelectedBotPanel()
     CreateToolBar(frame, -y, "CLASS_DRUID", {
         ["bear"] = {
             icon = "bear",
-            command = BuildCombatRoleCommands("bear", "tank"),
-            strategy = "bear",
-            tooltip = "Use bear form",
+            command = BuildStrategyCommands({"tank feral", "tank assist", "pull", "pull back", "close"}, {"tank feral", "tank assist"}),
+            strategy = "tank feral",
+            tooltip = "Feral tank / bear strategy",
             index = 0
         },
         ["cat"] = {
             icon = "cat",
-            command = BuildCombatRoleCommands("cat", "dps", "dps assist"),
-            strategy = "cat",
-            tooltip = "Use cat form",
+            command = BuildStrategyCommands({"dps feral", "dps assist", "close", "behind"}, {"dps feral", "dps assist"}),
+            strategy = "dps feral",
+            tooltip = "Feral cat DPS strategy",
             index = 1
         },
         ["caster"] = {
             icon = "caster",
-            command = BuildCombatRoleCommands("caster", "dps", "dps assist"),
-            strategy = "caster",
-            tooltip = "Use caster form",
+            command = BuildStrategyCommands({"balance", "dps assist", "ranged"}, {"balance", "dps assist"}),
+            strategy = "balance",
+            tooltip = "Balance caster DPS strategy",
             index = 2
         },
         ["heal"] = {
             icon = "heal",
-            command = BuildCombatRoleCommands("heal"),
-            strategy = "heal",
-            tooltip = "Healer mode",
+            command = BuildStrategyCommands({"restoration", "ranged", "cure"}, {"restoration", "cure"}),
+            strategy = "restoration",
+            tooltip = "Restoration healer strategy",
             index = 3
         },
         ["cure"] = {
             icon = "cure",
-            command = {[0] = "co ~cure,?", [1] = "nc ~cure,?"},
+            command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
-            tooltip = "Cure (poison, disease, etc.)",
+            tooltip = "Cure poisons/curses",
             index = 4
         }
     })
     CreateToolBar(frame, -y, "CLASS_HUNTER", {
         ["dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
-            strategy = "dps",
-            tooltip = "DPS mode",
+            command = BuildStrategyCommands({"dps assist", "ranged", "pet", "aspect", "sting"}, {"dps assist", "pet", "aspect"}),
+            strategy = "dps assist",
+            tooltip = "Hunter DPS assist strategy",
             index = 0
         },
-        ["bspeed"] = {
+        ["aspect"] = {
             icon = "bspeed",
-            command = {[0] = "co ~bspeed,?", [1] = "nc ~bspeed,?"},
-            strategy = "bspeed",
-            tooltip = "Buff movement speed",
+            command = BuildStrategyCommands({"aspect"}, {"aspect"}),
+            strategy = "aspect",
+            tooltip = "Use hunter aspects",
             index = 1
         },
-        ["bmana"] = {
+        ["pet"] = {
             icon = "bmana",
-            command = {[0] = "co ~bmana,?", [1] = "nc ~bmana,?"},
-            strategy = "bmana",
-            tooltip = "Buff mana regen",
+            command = BuildStrategyCommands({"pet"}, {"pet"}),
+            strategy = "pet",
+            tooltip = "Use hunter pet",
             index = 2
         },
-        ["bdps"] = {
+        ["sting"] = {
             icon = "bdps",
-            command = {[0] = "co ~bdps,?", [1] = "nc ~bdps,?"},
-            strategy = "bdps",
-            tooltip = "Buff DPS",
+            command = BuildStrategyCommands({"sting"}, nil),
+            strategy = "sting",
+            tooltip = "Use hunter stings",
             index = 3
         }
     })
     CreateToolBar(frame, -y, "CLASS_MAGE", {
         ["arcane"] = {
             icon = "arcane",
-            command = {[0] = "co +arcane,?"},
+            command = BuildStrategyCommands({"arcane", "dps assist", "ranged"}, {"arcane", "dps assist"}),
             strategy = "arcane",
-            tooltip = "Use arcane spells",
+            tooltip = "Arcane mage strategy",
             index = 0
         },
         ["fire"] = {
             icon = "fire",
-            command = {[0] = "co +fire,?"},
+            command = BuildStrategyCommands({"fire", "dps assist", "ranged"}, {"fire", "dps assist"}),
             strategy = "fire",
-            tooltip = "Use fire spells",
+            tooltip = "Fire mage strategy",
             index = 1
         },
-        ["fire_aoe"] = {
+        ["aoe"] = {
             icon = "fire_aoe",
-            command = {[0] = "co ~fire aoe,?"},
-            strategy = "fire aoe",
-            tooltip = "Use fire AOE abilities",
+            command = BuildStrategyCommands({"aoe"}, nil),
+            strategy = "aoe",
+            tooltip = "Use AOE spells",
             index = 2
         },
         ["frost"] = {
             icon = "frost",
-            command = {[0] = "co +frost,?"},
+            command = BuildStrategyCommands({"frost", "dps assist", "ranged"}, {"frost", "dps assist"}),
             strategy = "frost",
-            tooltip = "Use frost spells",
+            tooltip = "Frost mage strategy",
             index = 3
         },
-        ["frost_aoe"] = {
+        ["cc"] = {
             icon = "frost_aoe",
-            command = {[0] = "co ~frost aoe,?"},
-            strategy = "frost aoe",
-            tooltip = "Use frost AOE abilities",
+            command = BuildStrategyCommands({"cc"}, nil),
+            strategy = "cc",
+            tooltip = "Use crowd control",
             index = 4
         },
-        ["bmana"] = {
+        ["buff"] = {
             icon = "bmana",
-            command = {[0] = "co ~bmana,?", [1] = "nc ~bmana,?"},
-            strategy = "bmana",
-            tooltip = "Buff mana regen",
+            command = BuildStrategyCommands({"buff"}, {"buff"}),
+            strategy = "buff",
+            tooltip = "Buff party",
             index = 5
         },
-        ["bdps"] = {
+        ["boost"] = {
             icon = "bdps",
-            command = {[0] = "co ~bdps,?", [1] = "nc ~bdps,?"},
-            strategy = "bdps",
-            tooltip = "Buff DPS",
+            command = BuildStrategyCommands({"boost"}, {"boost"}),
+            strategy = "boost",
+            tooltip = "Use burst/boost abilities",
             index = 6
         },
         ["cure"] = {
             icon = "cure",
-            command = {[0] = "co ~cure,?", [1] = "nc ~cure,?"},
+            command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
-            tooltip = "Cure (poison, disease, etc.)",
+            tooltip = "Remove curses",
             index = 7
         }
     })
     CreateToolBar(frame, -y, "CLASS_PALADIN", {
         ["dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
-            strategy = "dps",
-            tooltip = "DPS mode",
+            command = BuildStrategyCommands({"retribution", "dps assist", "close"}, {"retribution", "dps assist"}),
+            strategy = "retribution",
+            tooltip = "Retribution DPS strategy",
             index = 0
         },
         ["tank"] = {
             icon = "tank",
-            command = BuildCombatRoleCommands("tank"),
-            strategy = "tank",
-            tooltip = "Tank mode",
+            command = BuildStrategyCommands({"protection", "tank assist", "pull", "pull back", "close"}, {"protection", "tank assist"}),
+            strategy = "protection",
+            tooltip = "Protection tank strategy",
             index = 1
         },
         ["heal"] = {
             icon = "heal",
-            command = BuildCombatRoleCommands("heal"),
-            strategy = "heal",
-            tooltip = "Healer mode",
+            command = BuildStrategyCommands({"holy", "ranged", "cure"}, {"holy", "cure"}),
+            strategy = "holy",
+            tooltip = "Holy healer strategy",
             index = 2
         },
-        ["bmana"] = {
+        ["aura"] = {
             icon = "bmana",
-            command = {[0] = "co ~bmana,?", [1] = "nc ~bmana,?"},
-            strategy = "bmana",
-            tooltip = "Buff mana regen",
+            command = BuildStrategyCommands({"aura"}, {"aura"}),
+            strategy = "aura",
+            tooltip = "Use auras",
             index = 3
         },
-        ["bhealth"] = {
+        ["blessing"] = {
             icon = "bhealth",
-            command = {[0] = "co ~bhealth,?"},
-            strategy = "bhealth",
-            tooltip = "Buff health regen",
+            command = BuildStrategyCommands({"blessing"}, {"blessing"}),
+            strategy = "blessing",
+            tooltip = "Use blessings",
             index = 4
         },
-        ["bdps"] = {
+        ["buff"] = {
             icon = "bdps",
-            command = {[0] = "co ~bdps,?", [1] = "nc ~bdps,?"},
-            strategy = "bdps",
-            tooltip = "Buff DPS",
+            command = BuildStrategyCommands({"buff"}, {"buff"}),
+            strategy = "buff",
+            tooltip = "Buff party",
             index = 5
         },
-        ["barmor"] = {
+        ["boost"] = {
             icon = "barmor",
-            command = {[0] = "co ~barmor,?", [1] = "nc ~barmor,?"},
-            strategy = "barmor",
-            tooltip = "Buff armor",
+            command = BuildStrategyCommands({"boost"}, {"boost"}),
+            strategy = "boost",
+            tooltip = "Use boost abilities",
             index = 6
         },
-        ["bspeed"] = {
+        ["cc"] = {
             icon = "bspeed",
-            command = {[0] = "co ~bspeed,?", [1] = "nc ~bspeed,?"},
-            strategy = "bspeed",
-            tooltip = "Buff movement speed",
+            command = BuildStrategyCommands({"cc"}, nil),
+            strategy = "cc",
+            tooltip = "Use control/interrupt tools",
             index = 7
         },
-        ["bthreat"] = {
+        ["threat"] = {
             icon = "bthreat",
-            command = {[0] = "co ~bthreat,?", [1] = "nc ~bthreat,?"},
-            strategy = "bthreat",
-            tooltip = "Buff threat generation",
+            command = BuildStrategyCommands({"threat"}, nil),
+            strategy = "threat",
+            tooltip = "Threat management",
             index = 8
         },
         ["cure"] = {
             icon = "cure",
-            command = {[0] = "co ~cure,?", [1] = "nc ~cure,?"},
+            command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
-            tooltip = "Cure (poison, disease, etc.)",
+            tooltip = "Cleanse party",
             index = 9
         }
     })
     CreateToolBar(frame, -y, "CLASS_PRIEST", {
         ["heal"] = {
             icon = "heal",
-            command = BuildCombatRoleCommands("heal"),
-            strategy = "heal",
-            tooltip = "Healer mode",
+            command = BuildStrategyCommands({"holy", "ranged", "cure"}, {"holy", "cure"}),
+            strategy = "holy",
+            tooltip = "Holy healer strategy",
             index = 0
         },
-        ["holy"] = {
+        ["discipline"] = {
             icon = "holy",
-            command = {[0] = "co +holy,?"},
-            strategy = "holy",
-            tooltip = "Use holy spells",
+            command = BuildStrategyCommands({"discipline", "ranged", "cure"}, {"discipline", "cure"}),
+            strategy = "discipline",
+            tooltip = "Discipline healer strategy",
             index = 1
         },
         ["shadow"] = {
             icon = "shadow",
-            command = BuildCombatRoleCommands("shadow", "dps", "dps assist"),
+            command = BuildStrategyCommands({"shadow", "dps assist", "ranged"}, {"shadow", "dps assist"}),
             strategy = "shadow",
-            tooltip = "Dps mode: shadow",
+            tooltip = "Shadow DPS strategy",
             index = 2
         },
-        ["shadow_aoe"] = {
+        ["aoe"] = {
             icon = "shadow_aoe",
-            command = {[0] = "co ~shadow aoe,?"},
-            strategy = "shadow aoe",
-            tooltip = "Use shadow AOE abilities",
+            command = BuildStrategyCommands({"aoe"}, nil),
+            strategy = "aoe",
+            tooltip = "Use AOE",
             index = 3
         },
-        ["shadow_debuff"] = {
+        ["cc"] = {
             icon = "shadow_debuff",
-            command = {[0] = "co ~shadow debuff,?"},
-            strategy = "shadow debuff",
-            tooltip = "Use shadow debuffs",
+            command = BuildStrategyCommands({"cc"}, nil),
+            strategy = "cc",
+            tooltip = "Use crowd control",
             index = 4
         },
         ["cure"] = {
             icon = "cure",
-            command = {[0] = "co ~cure,?", [1] = "nc ~cure,?"},
+            command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
-            tooltip = "Cure (poison, disease, etc.)",
+            tooltip = "Cure diseases/magic",
             index = 5
         }
     })
     CreateToolBar(frame, -y, "CLASS_ROGUE", {
         ["dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
-            strategy = "dps",
-            tooltip = "DPS mode",
+            command = BuildStrategyCommands({"combat", "dps assist", "close", "behind"}, {"combat", "dps assist"}),
+            strategy = "combat",
+            tooltip = "Combat rogue DPS strategy",
             index = 0
+        },
+        ["stealth"] = {
+            icon = "shadow",
+            command = BuildStrategyCommands({"stealth"}, {"stealth"}),
+            strategy = "stealth",
+            tooltip = "Use stealth",
+            index = 1
+        },
+        ["poisons"] = {
+            icon = "cure",
+            command = BuildStrategyCommands({"poisons"}, {"poisons"}),
+            strategy = "poisons",
+            tooltip = "Use poisons",
+            index = 2
         }
     })
     CreateToolBar(frame, -y, "CLASS_SHAMAN", {
         ["caster"] = {
             icon = "caster",
-            command = BuildCombatRoleCommands("caster", "dps", "dps assist"),
-            strategy = "caster",
-            tooltip = "Caster mode",
+            command = BuildStrategyCommands({"elemental", "dps assist", "ranged", "aoe", "cc"}, {"elemental", "dps assist", "aoe", "cc"}),
+            strategy = "elemental",
+            tooltip = "Elemental caster DPS strategy",
             index = 0
         },
-        ["caster_aoe"] = {
+        ["aoe"] = {
             icon = "caster_aoe",
-            command = {[0] = "co ~caster aoe,?"},
-            strategy = "caster aoe",
-            tooltip = "Use caster AOE abilities",
+            command = BuildStrategyCommands({"aoe"}, {"aoe"}),
+            strategy = "aoe",
+            tooltip = "Use AOE abilities",
             index = 1
         },
         ["heal"] = {
             icon = "heal",
-            command = BuildCombatRoleCommands("heal"),
-            strategy = "heal",
-            tooltip = "Healer mode",
+            command = BuildStrategyCommands({"restoration", "ranged", "cure"}, {"restoration", "cure"}),
+            strategy = "restoration",
+            tooltip = "Restoration healer strategy",
             index = 2
         },
         ["melee"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("melee", "dps", "dps assist"),
-            strategy = "melee",
-            tooltip = "Melee mode",
+            command = BuildStrategyCommands({"enhancement", "dps assist", "close", "aoe", "cc"}, {"enhancement", "dps assist", "aoe", "cc"}),
+            strategy = "enhancement",
+            tooltip = "Enhancement melee DPS strategy",
             index = 3
         },
-        ["melee_aoe"] = {
+        ["cc"] = {
             icon = "aoe",
-            command = {[0] = "co ~melee aoe,?"},
-            strategy = "melee aoe",
-            tooltip = "Use melee AOE abilities",
+            command = BuildStrategyCommands({"cc"}, {"cc"}),
+            strategy = "cc",
+            tooltip = "Use CC/interrupt tools",
             index = 4
         },
         ["totems"] = {
             icon = "totems",
-            command = {[0] = "co ~totems,?"},
+            command = BuildStrategyCommands({"totems"}, {"totems"}),
             strategy = "totems",
             tooltip = "Use totems",
             index = 5
         },
-        ["bmana"] = {
+        ["buff"] = {
             icon = "bmana",
-            command = {[0] = "co ~bmana,?", [1] = "nc ~bmana,?"},
-            strategy = "bmana",
-            tooltip = "Buff mana regen",
+            command = BuildStrategyCommands({"buff"}, {"buff"}),
+            strategy = "buff",
+            tooltip = "Buff party",
             index = 6
         },
-        ["bdps"] = {
+        ["boost"] = {
             icon = "bdps",
-            command = {[0] = "co ~bdps,?", [1] = "nc ~bdps,?"},
-            strategy = "bdps",
-            tooltip = "Buff DPS",
+            command = BuildStrategyCommands({"boost"}, {"boost"}),
+            strategy = "boost",
+            tooltip = "Use boost abilities",
             index = 7
         },
         ["cure"] = {
             icon = "cure",
-            command = {[0] = "co ~cure,?", [1] = "nc ~cure,?"},
+            command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
-            tooltip = "Cure (poison, disease, etc.)",
+            tooltip = "Cure poisons/diseases",
             index = 8
         }
     })
     CreateToolBar(frame, -y, "CLASS_WARLOCK", {
         ["dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
-            strategy = "dps",
-            tooltip = "DPS mode",
+            command = BuildStrategyCommands({"destruction", "dps assist", "ranged", "pet", "curse"}, {"destruction", "dps assist", "pet"}),
+            strategy = "destruction",
+            tooltip = "Destruction DPS strategy",
             index = 0
         },
-        ["dps_debuff"] = {
+        ["curse"] = {
             icon = "dps_debuff",
-            command = {[0] = "co ~dps debuff,?"},
-            strategy = "dps debuff",
-            tooltip = "Use DPS debuffs",
+            command = BuildStrategyCommands({"curse"}, nil),
+            strategy = "curse",
+            tooltip = "Use curses",
             index = 1
         },
-        ["caster_aoe"] = {
+        ["aoe"] = {
             icon = "caster_aoe",
-            command = {[0] = "co ~aoe,?"},
+            command = BuildStrategyCommands({"aoe"}, nil),
             strategy = "aoe",
             tooltip = "Use AOE abilities",
             index = 2
         },
-        ["tank"] = {
+        ["voidwalker"] = {
             icon = "tank",
-            command = BuildCombatRoleCommands("tank"),
-            strategy = "tank",
-            tooltip = "Summon tanky demons",
+            command = BuildStrategyCommands({"pet", "pet voidwalker"}, {"pet", "pet voidwalker"}),
+            strategy = "pet voidwalker",
+            tooltip = "Use Voidwalker pet",
             index = 3
         }
     })
     CreateToolBar(frame, -y, "CLASS_WARRIOR", {
         ["dps"] = {
             icon = "dps",
-            command = BuildCombatRoleCommands("dps", "dps assist"),
-            strategy = "dps",
-            tooltip = "DPS mode",
+            command = BuildStrategyCommands({"fury", "dps assist", "close", "behind"}, {"fury", "dps assist"}),
+            strategy = "fury",
+            tooltip = "Fury DPS strategy",
             index = 0
         },
         ["warrior_aoe"] = {
             icon = "warrior_aoe",
-            command = {[0] = "co ~aoe,?"},
+            command = BuildStrategyCommands({"aoe"}, nil),
             strategy = "aoe",
             tooltip = "Use AOE abilities",
             index = 1
         },
         ["tank"] = {
             icon = "tank",
-            command = BuildCombatRoleCommands("tank"),
-            strategy = "tank",
-            tooltip = "Summon tanky demons",
+            command = BuildStrategyCommands({"protection", "tank assist", "pull", "pull back", "close"}, {"protection", "tank assist"}),
+            strategy = "protection",
+            tooltip = "Protection tank strategy",
             index = 2
         }
     })
@@ -1949,21 +2803,7 @@ Mangosbot_EventFrame:SetScript("OnEvent", function(self)
                 end
                 local numButtons = 0
                 for buttonName,button in pairs(toolbar) do
-                    local toggle = false
-                    if (button["strategy"] ~= nil) then
-                        for key,strategy in pairs(bot["strategy"]["nc"]) do
-                            if (strategy == button["strategy"]) then
-                                toggle = true
-                                break
-                            end
-                        end
-                        for key,strategy in pairs(bot["strategy"]["co"]) do
-                            if (strategy == button["strategy"]) then
-                                toggle = true
-                                break
-                            end
-                        end
-                    end
+                    local toggle = ButtonIsActiveForBot(button, bot)
                     if (button["formation"] ~= nil and bot["formation"] ~= nil and string.find(bot["formation"], button["formation"]) ~= nil) then
                         toggle = true
                     end
@@ -1994,19 +2834,8 @@ function UpdateGroupToolBar()
         for buttonName,button in pairs(toolbar) do
             local toggle = false
             for key,bot in pairs(botTable) do
-                if (button["strategy"] ~= nil and bot["strategy"] ~= nil) then
-                    for key,strategy in pairs(bot["strategy"]["nc"]) do
-                        if (strategy == button["strategy"]) then
-                            toggle = true
-                            break
-                        end
-                    end
-                    for key,strategy in pairs(bot["strategy"]["co"]) do
-                        if (strategy == button["strategy"]) then
-                            toggle = true
-                            break
-                        end
-                    end
+                if (ButtonIsActiveForBot(button, bot)) then
+                    toggle = true
                 end
                 if (button["formation"] ~= nil and bot["formation"] ~= nil and string.find(bot["formation"], button["formation"]) ~= nil) then
                     toggle = true
@@ -2089,7 +2918,6 @@ function OnWhisper(message, sender)
     if (strategyText ~= nil) then
         local list = {}
         local seen = {}
-        local role = bot["role"] or "dps"
         local splitted = splitString2(strategyText, ",")
 
         for i = 1, tablelength(splitted) do
@@ -2103,14 +2931,6 @@ function OnWhisper(message, sender)
                 if (name == "nc") then
                     strategyType = "nc"
                 end
-
-                -- Guess the role from active combat strategies.
-                if (name == "heal" or name == "healer") then
-                    role = "heal"
-                end
-                if (name == "tank" or name == "bear") then
-                    role = "tank"
-                end
             end
         end
 
@@ -2120,11 +2940,9 @@ function OnWhisper(message, sender)
 
         bot['strategy'][strategyType] = list
 
-        if (strategyType == "co") then
-            bot["role"] = role
-        elseif (bot["role"] == nil) then
-            bot["role"] = "dps"
-        end
+        -- Re-guess the role from both co and nc because this playerbot build can
+        -- report role-looking combat flags inside Non Combat Strategies.
+        bot["role"] = BartcraftGuessRoleFromStrategies(bot)
     end
 
     if (string.find(message, 'Formation: ') == 1) then
@@ -2237,6 +3055,26 @@ function SlashCmdList.MANGOSBOT(msg, editbox) -- 4.
         else
             DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Select a bot first, then use /bot refresh.|r")
         end
+        return
+    end
+
+    if (msg == "wipe" or msg == "wipestrats" or msg == "wipe strategies") then
+        WipeSelectedBotStrategies()
+        return
+    end
+
+    if (msg == "dps" or msg == "role dps") then
+        BartcraftSetDpsMode()
+        return
+    end
+
+    if (msg == "tank" or msg == "role tank") then
+        BartcraftSetTankMode()
+        return
+    end
+
+    if (msg == "heal" or msg == "healer" or msg == "role heal") then
+        BartcraftSetHealMode()
         return
     end
 
