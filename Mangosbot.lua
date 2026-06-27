@@ -357,6 +357,13 @@ function ButtonHasExplicitStrategyCommands(button)
 end
 
 function BuildButtonOnCommands(button)
+    -- Some buttons intentionally send cleanup commands before adding their active flag.
+    -- Example: paladin blessing buttons remove every other blessing strategy, then
+    -- add only the selected blessing. Do not rebuild those into plain +flags.
+    if (button ~= nil and button["rawOnActivate"]) then
+        return button["command"]
+    end
+
     local map = BartcraftGetButtonFlagMap(button)
     local commands = {}
     local seen = {}
@@ -505,6 +512,7 @@ function CreateToolBar(frame, y, name, buttons, x, spacing, register)
         btn["group"] = button["group"]
         btn["handler"] = button["handler"]
         btn["roleButton"] = button["roleButton"]
+        btn["rawOnActivate"] = button["rawOnActivate"]
         btn["strategy"] = button["strategy"]
         btn["formation"] = button["formation"]
         btn["rti"] = button["rti"]
@@ -1307,6 +1315,239 @@ function BuildStrategyCommands(coFlags, ncFlags)
 end
 
 
+-- Bartcraft paladin blessing buttons:
+-- ike3 AIPlayerbot manual blessing strategies are named
+-- "blessing might", "blessing wisdom", "blessing kings", etc.
+-- These buttons clear the generic/auto blessing packages and every other manual
+-- blessing first, then add only the blessing the player picked to BOTH
+-- combat and non-combat strategy lists.
+BartcraftPaladinBlessingClearList = {
+    "blessing",
+    "blessing might",
+    "blessing wisdom",
+    "blessing kings",
+    "blessing sanctuary",
+    "blessing light",
+    "blessing salvation",
+    "blessing holy pve",
+    "blessing protection pve",
+    "blessing retribution pve",
+    "blessing holy raid",
+    "blessing protection raid",
+    "blessing retribution raid",
+    "blessing holy pvp",
+    "blessing protection pvp",
+    "blessing retribution pvp",
+    "blessing pve",
+    "blessing raid",
+    "blessing pvp",
+    "greater blessing",
+    "greater blessing pve",
+    "greater blessing raid",
+    "greater blessing pvp"
+}
+
+function BuildExclusivePaladinBlessingCommands(selectedBlessing)
+    local commands = {}
+    local delay = 0
+    local step = 0.10
+    local seen = {}
+
+    local function remove(family, flag)
+        flag = BartcraftTrimFlag(flag)
+        if (family == nil or flag == nil or flag == "" or flag == "?" or seen[family .. ":-" .. flag]) then
+            return
+        end
+
+        seen[family .. ":-" .. flag] = true
+        commands[delay] = family .. " -" .. flag
+        delay = delay + step
+    end
+
+    -- Remove from both families because role/default buttons may have added
+    -- generic or automatic blessing strategies to either strategy list.
+    for i = 1, table.getn(BartcraftPaladinBlessingClearList) do
+        remove("co", BartcraftPaladinBlessingClearList[i])
+        remove("nc", BartcraftPaladinBlessingClearList[i])
+    end
+
+    selectedBlessing = BartcraftTrimFlag(selectedBlessing)
+    if (selectedBlessing ~= nil and selectedBlessing ~= "" and selectedBlessing ~= "?") then
+        delay = delay + 0.10
+        commands[delay] = "co +" .. selectedBlessing
+        delay = delay + step
+        commands[delay] = "nc +" .. selectedBlessing
+    end
+
+    return commands
+end
+
+-- Bartcraft dangerous fear/CC cleanup:
+-- Priest and warlock package strategies can show up as exact flags like
+-- "cc shadow" in addition to plain "cc". The normal CC toggle only knows
+-- about its own represented flag, so this helper is a dungeon-safe nuke button
+-- that removes every current cc* flag plus known priest/warlock cc packages
+-- from BOTH co and nc strategy lists.
+BartcraftDangerousFearCcClearList = {
+    "cc",
+    "cc pve",
+    "cc pvp",
+    "cc raid",
+    "cc shadow",
+    "cc shadow pve",
+    "cc shadow pvp",
+    "cc shadow raid",
+    "cc holy",
+    "cc holy pve",
+    "cc holy pvp",
+    "cc holy raid",
+    "cc discipline",
+    "cc discipline pve",
+    "cc discipline pvp",
+    "cc discipline raid",
+    "cc affliction",
+    "cc affliction pve",
+    "cc affliction pvp",
+    "cc affliction raid",
+    "cc demonology",
+    "cc demonology pve",
+    "cc demonology pvp",
+    "cc demonology raid",
+    "cc destruction",
+    "cc destruction pve",
+    "cc destruction pvp",
+    "cc destruction raid",
+    "fear",
+    "fear pve",
+    "fear pvp",
+    "fear raid",
+    "howl of terror",
+    "howl of terror pve",
+    "howl of terror pvp",
+    "howl of terror raid"
+}
+
+function BartcraftStrategyLooksLikeCc(flag)
+    flag = BartcraftTrimFlag(flag)
+    if (flag == nil or flag == "") then
+        return false
+    end
+
+    local lower = string.lower(flag)
+
+    -- Exact cc or any package that begins with cc, such as "cc shadow".
+    if (lower == "cc" or string.find(lower, "^cc%s") ~= nil) then
+        return true
+    end
+
+    -- Extra safety for fear-named package strategies, if a build reports them.
+    if (lower == "fear" or string.find(lower, "^fear%s") ~= nil) then
+        return true
+    end
+
+    if (lower == "howl of terror" or string.find(lower, "^howl of terror%s") ~= nil) then
+        return true
+    end
+
+    return false
+end
+
+function BartcraftAddDangerousCcFlag(flags, seen, flag)
+    flag = BartcraftTrimFlag(flag)
+    if (flag == nil or flag == "" or flag == "?") then
+        return
+    end
+
+    local key = string.lower(flag)
+    if (seen[key]) then
+        return
+    end
+
+    seen[key] = true
+    table.insert(flags, flag)
+end
+
+function BartcraftBuildDangerousFearCcOffCommands(bot)
+    local flags = {}
+    local seen = {}
+
+    if (bot ~= nil and bot["strategy"] ~= nil) then
+        if (bot["strategy"]["co"] ~= nil) then
+            for i = 1, table.getn(bot["strategy"]["co"]) do
+                if (BartcraftStrategyLooksLikeCc(bot["strategy"]["co"][i])) then
+                    BartcraftAddDangerousCcFlag(flags, seen, bot["strategy"]["co"][i])
+                end
+            end
+        end
+
+        if (bot["strategy"]["nc"] ~= nil) then
+            for i = 1, table.getn(bot["strategy"]["nc"]) do
+                if (BartcraftStrategyLooksLikeCc(bot["strategy"]["nc"][i])) then
+                    BartcraftAddDangerousCcFlag(flags, seen, bot["strategy"]["nc"][i])
+                end
+            end
+        end
+    end
+
+    for i = 1, table.getn(BartcraftDangerousFearCcClearList) do
+        BartcraftAddDangerousCcFlag(flags, seen, BartcraftDangerousFearCcClearList[i])
+    end
+
+    local commands = {}
+    local delay = 0
+    local step = 0.10
+
+    for i = 1, table.getn(flags) do
+        commands[delay] = "co -" .. flags[i]
+        delay = delay + step
+        commands[delay] = "nc -" .. flags[i]
+        delay = delay + step
+    end
+
+    return commands, delay
+end
+
+function BartcraftRunDangerousFearCcOff(botName)
+    if (botName == nil or botName == "") then
+        return
+    end
+
+    local bot = botTable[botName]
+    local commands, finalDelay = BartcraftBuildDangerousFearCcOffCommands(bot)
+    local count = 0
+
+    for delay, command in pairs(commands) do
+        count = count + 1
+        wait(delay, function(command, botName)
+            SendBotCommand(command, "WHISPER", nil, botName)
+        end, command, botName)
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage("|cff55ff55Mangosbot removing dangerous fear/CC strategies from " .. botName .. ".|r")
+
+    wait(finalDelay + 0.75, function(botName)
+        LastBotQueryTime[botName] = nil
+        QuerySelectedBot(botName, false)
+    end, botName)
+end
+
+function DisableSelectedBotDangerousFearCc()
+    local botName = GetPinnedBotName()
+
+    if (botName == nil or botName == "") then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Mangosbot cannot remove fear/CC: no bot menu is selected.|r")
+        return
+    end
+
+    -- Query first so exact package strategies like "cc shadow" are captured.
+    LastBotQueryTime[botName] = nil
+    SendBotAddonCommand("co ?", "WHISPER", nil, botName)
+    wait(0.20, function(botName) SendBotAddonCommand("nc ?", "WHISPER", nil, botName) end, botName)
+    wait(0.90, function(botName) BartcraftRunDangerousFearCcOff(botName) end, botName)
+end
+
+
+
 -- Strategies that commonly appear as default/playerbot package behavior.
 -- The wipe button also removes every exact strategy currently reported by co ? / nc ?,
 -- so this list is only a safety net for stale panels or server-side oddities.
@@ -1339,6 +1580,21 @@ BartcraftKnownStrategyClearList = {
     "cure elemental pve",
     "cure restoration pve",
     "cc",
+    "cc pve",
+    "cc pvp",
+    "cc raid",
+    "cc shadow",
+    "cc shadow pve",
+    "cc holy",
+    "cc holy pve",
+    "cc discipline",
+    "cc discipline pve",
+    "cc affliction",
+    "cc affliction pve",
+    "cc demonology",
+    "cc demonology pve",
+    "cc destruction",
+    "cc destruction pve",
     "cc restoration pve",
     "chase jump",
     "duel",
@@ -1498,9 +1754,9 @@ BartcraftRoleProfiles = {
         tank = { spec = "pve prot", co = {"protection", "tank assist", "pull", "pull back", "close", "aoe", "buff", "boost"}, nc = {"protection", "tank assist", "buff", "boost"} }
     },
     ["PALADIN"] = {
-        dps = { spec = "pve dps ret", co = {"retribution", "dps assist", "close", "cure", "aoe", "cc", "buff", "boost", "aura", "blessing"}, nc = {"retribution", "dps assist", "cure", "buff", "boost", "aura", "blessing"} },
-        tank = { spec = "pve prot", co = {"protection", "tank assist", "pull", "pull back", "close", "cure", "aoe", "cc", "buff", "boost", "aura", "blessing"}, nc = {"protection", "tank assist", "cure", "buff", "boost", "aura", "blessing"} },
-        heal = { spec = "pve holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "buff", "boost", "aura", "blessing"}, nc = {"holy", "dps assist", "cure", "buff", "boost", "aura", "blessing"} }
+        dps = { spec = "pve dps ret", co = {"retribution", "dps assist", "close", "cure", "aoe", "cc", "buff", "boost", "aura"}, nc = {"retribution", "dps assist", "cure", "buff", "boost", "aura"} },
+        tank = { spec = "pve prot", co = {"protection", "tank assist", "pull", "pull back", "close", "cure", "aoe", "cc", "buff", "boost", "aura"}, nc = {"protection", "tank assist", "cure", "buff", "boost", "aura"} },
+        heal = { spec = "pve holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "buff", "boost", "aura"}, nc = {"holy", "dps assist", "cure", "buff", "boost", "aura"} }
     },
     ["HUNTER"] = {
         dps = { spec = "pve dps bm", co = {"beast mastery", "dps assist", "ranged", "pet", "aspect", "sting", "cc", "aoe", "buff", "boost"}, nc = {"beast mastery", "dps assist", "pet", "aspect", "buff", "boost"} }
@@ -1509,8 +1765,8 @@ BartcraftRoleProfiles = {
         dps = { spec = "pve dps combat", co = {"combat", "dps assist", "close", "behind", "stealth", "poisons", "aoe", "cc", "buff", "boost"}, nc = {"combat", "dps assist", "stealth", "poisons", "buff", "boost"} }
     },
     ["PRIEST"] = {
-        dps = { spec = "pve dps shadow", co = {"shadow", "dps assist", "flee", "ranged", "cure", "cc", "buff", "aoe", "boost"}, nc = {"shadow", "dps assist", "cure", "buff", "boost"} },
-        heal = { spec = "pve heal holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "cc", "buff", "aoe", "boost"}, nc = {"holy", "dps assist", "cure", "buff", "boost"} }
+        dps = { spec = "pve dps shadow", co = {"shadow", "dps assist", "flee", "ranged", "cure", "buff", "aoe", "boost"}, nc = {"shadow", "dps assist", "cure", "buff", "boost"} },
+        heal = { spec = "pve heal holy", co = {"holy", "dps assist", "flee", "ranged", "cure", "buff", "aoe", "boost"}, nc = {"holy", "dps assist", "cure", "buff", "boost"} }
     },
     ["SHAMAN"] = {
         dps = { spec = "pve dps elem", co = {"elemental", "dps assist", "ranged", "aoe", "cc", "cure", "totems", "buff", "boost"}, nc = {"elemental", "dps assist", "aoe", "cc", "cure", "totems", "buff", "boost"} },
@@ -1521,7 +1777,7 @@ BartcraftRoleProfiles = {
         dps = { spec = "pve dps fire", co = {"fire", "dps assist", "flee", "ranged", "cc", "cure", "buff", "aoe", "boost"}, nc = {"fire", "dps assist", "cure", "buff", "boost"} }
     },
     ["WARLOCK"] = {
-        dps = { spec = "pve dps destro", co = {"destruction", "dps assist", "flee", "ranged", "cc", "pet", "aoe", "buff", "boost", "curse"}, nc = {"destruction", "dps assist", "pet", "buff", "boost"} }
+        dps = { spec = "pve dps destro", co = {"destruction", "dps assist", "flee", "ranged", "pet", "aoe", "buff", "boost", "curse"}, nc = {"destruction", "dps assist", "pet", "buff", "boost"} }
     },
     ["DRUID"] = {
         dps = { spec = "pve dps feral cat", co = {"dps feral", "dps assist", "close", "behind", "cure", "aoe", "cc", "buff", "boost"}, nc = {"dps feral", "dps assist", "cure", "buff", "boost"} },
@@ -2085,47 +2341,91 @@ function CreateSelectedBotPanel()
             tooltip = "Use auras",
             index = 3
         },
-        ["blessing"] = {
-            icon = "bhealth",
-            command = BuildStrategyCommands({"blessing"}, {"blessing"}),
-            strategy = "blessing",
-            tooltip = "Use blessings",
-            index = 4
-        },
         ["buff"] = {
             icon = "bdps",
             command = BuildStrategyCommands({"buff"}, {"buff"}),
             strategy = "buff",
             tooltip = "Buff party",
-            index = 5
+            index = 4
         },
         ["boost"] = {
             icon = "barmor",
             command = BuildStrategyCommands({"boost"}, {"boost"}),
             strategy = "boost",
             tooltip = "Use boost abilities",
-            index = 6
+            index = 5
         },
         ["cc"] = {
             icon = "bspeed",
             command = BuildStrategyCommands({"cc"}, nil),
             strategy = "cc",
             tooltip = "Use control/interrupt tools",
-            index = 7
+            index = 6
         },
         ["threat"] = {
             icon = "bthreat",
             command = BuildStrategyCommands({"threat"}, nil),
             strategy = "threat",
             tooltip = "Threat management",
-            index = 8
+            index = 7
         },
         ["cure"] = {
             icon = "cure",
             command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
             tooltip = "Cleanse party",
-            index = 9
+            index = 8
+        }
+    })
+
+    CreateToolBar(frame, -(y + 25), "CLASS_PALADIN_BLESSINGS", {
+        ["blessing_might"] = {
+            icon = "bdps",
+            command = BuildExclusivePaladinBlessingCommands("blessing might"),
+            rawOnActivate = true,
+            strategy = "blessing might",
+            tooltip = "Blessing of Might: removes other blessing strategies, then adds this one to co and nc",
+            index = 0
+        },
+        ["blessing_wisdom"] = {
+            icon = "bmana",
+            command = BuildExclusivePaladinBlessingCommands("blessing wisdom"),
+            rawOnActivate = true,
+            strategy = "blessing wisdom",
+            tooltip = "Blessing of Wisdom: removes other blessing strategies, then adds this one to co and nc",
+            index = 1
+        },
+        ["blessing_kings"] = {
+            icon = "bhealth",
+            command = BuildExclusivePaladinBlessingCommands("blessing kings"),
+            rawOnActivate = true,
+            strategy = "blessing kings",
+            tooltip = "Blessing of Kings: removes other blessing strategies, then adds this one to co and nc",
+            index = 2
+        },
+        ["blessing_sanctuary"] = {
+            icon = "barmor",
+            command = BuildExclusivePaladinBlessingCommands("blessing sanctuary"),
+            rawOnActivate = true,
+            strategy = "blessing sanctuary",
+            tooltip = "Blessing of Sanctuary: removes other blessing strategies, then adds this one to co and nc",
+            index = 3
+        },
+        ["blessing_light"] = {
+            icon = "heal",
+            command = BuildExclusivePaladinBlessingCommands("blessing light"),
+            rawOnActivate = true,
+            strategy = "blessing light",
+            tooltip = "Blessing of Light: removes other blessing strategies, then adds this one to co and nc",
+            index = 4
+        },
+        ["blessing_salvation"] = {
+            icon = "bthreat",
+            command = BuildExclusivePaladinBlessingCommands("blessing salvation"),
+            rawOnActivate = true,
+            strategy = "blessing salvation",
+            tooltip = "Blessing of Salvation: removes other blessing strategies, then adds this one to co and nc",
+            index = 5
         }
     })
     CreateToolBar(frame, -y, "CLASS_PRIEST", {
@@ -2161,15 +2461,23 @@ function CreateSelectedBotPanel()
             icon = "shadow_debuff",
             command = BuildStrategyCommands({"cc"}, nil),
             strategy = "cc",
-            tooltip = "Use crowd control",
+            tooltip = "Toggle basic priest CC. Use CC OFF to remove cc shadow and other fear CC packages too.",
             index = 4
+        },
+        ["cc_off"] = {
+            icon = "bthreat",
+            command = {},
+            handler = DisableSelectedBotDangerousFearCc,
+            strategy = "",
+            tooltip = "CC OFF dungeon-safe: removes cc, cc shadow, and other fear CC packages from co and nc.",
+            index = 5
         },
         ["cure"] = {
             icon = "cure",
             command = BuildStrategyCommands({"cure"}, {"cure"}),
             strategy = "cure",
             tooltip = "Cure diseases/magic",
-            index = 5
+            index = 6
         }
     })
     CreateToolBar(frame, -y, "CLASS_ROGUE", {
@@ -2282,12 +2590,27 @@ function CreateSelectedBotPanel()
             tooltip = "Use AOE abilities",
             index = 2
         },
+        ["cc"] = {
+            icon = "shadow_debuff",
+            command = BuildStrategyCommands({"cc"}, nil),
+            strategy = "cc",
+            tooltip = "Toggle basic warlock CC. Use CC OFF to remove fear/howl cc packages too.",
+            index = 3
+        },
+        ["cc_off"] = {
+            icon = "bthreat",
+            command = {},
+            handler = DisableSelectedBotDangerousFearCc,
+            strategy = "",
+            tooltip = "CC OFF dungeon-safe: removes cc, cc destruction/affliction/demonology, fear, and howl packages from co and nc.",
+            index = 4
+        },
         ["voidwalker"] = {
             icon = "tank",
             command = BuildStrategyCommands({"pet", "pet voidwalker"}, {"pet", "pet voidwalker"}),
             strategy = "pet voidwalker",
             tooltip = "Use Voidwalker pet",
-            index = 3
+            index = 5
         }
     })
     CreateToolBar(frame, -y, "CLASS_WARRIOR", {
@@ -2794,7 +3117,16 @@ Mangosbot_EventFrame:SetScript("OnEvent", function(self)
             for toolbarName,toolbar in pairs(ToolBars) do
                 local panelVisible = true
                 if (string.find(toolbarName, "CLASS_") == 1) then
-                    if (string.sub(toolbarName, 7) == class) then
+                    local classToolbarName = string.sub(toolbarName, 7)
+                    local classMatch = false
+
+                    if (classToolbarName == class) then
+                        classMatch = true
+                    elseif (string.sub(classToolbarName, 1, string.len(class) + 1) == class .. "_") then
+                        classMatch = true
+                    end
+
+                    if (classMatch) then
                         SelectedBotPanel.toolbar[toolbarName]:Show()
                     else
                         SelectedBotPanel.toolbar[toolbarName]:Hide()
